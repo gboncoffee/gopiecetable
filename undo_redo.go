@@ -1,22 +1,27 @@
-package buffer
+package gopiecetable
 
 import (
 	"errors"
 	"slices"
 )
 
+// Returned when there's nothing left to undo.
 var ErrorBottomOfUndoList = errors.New("reached bottom of undo list")
+
+// Returned when there's nothing left to redo.
 var ErrorTopOfUndoList = errors.New("reached top of undo list")
 
+// Represents an edit.
 type edit interface {
 	undoIndex() int
 	redoIndex() int
 }
 
+// Represents an insertion, implements edit.
 type insertion struct {
-	idx     int
-	piecIdx int
-	piec    piece
+	idx     int   // The real index.
+	piecIdx int   // The index in the piece array.
+	piec    piece // The piece itself.
 }
 
 func (i insertion) undoIndex() int {
@@ -27,11 +32,12 @@ func (i insertion) redoIndex() int {
 	return i.idx + i.piec.length
 }
 
+// Represents a deletion, implements edit.
 type deletion struct {
-	idx     int
-	piecIdx int
-	length  int
-	pieces  []piece
+	idx     int     // The real index.
+	piecIdx int     // The index in the pieces array.
+	length  int     // The total length deleted.
+	pieces  []piece // The pieces deleted.
 }
 
 func (d deletion) undoIndex() int {
@@ -42,7 +48,8 @@ func (d deletion) redoIndex() int {
 	return d.idx
 }
 
-func (b *Buffer[Content]) Undo() (int, error) {
+// Undoes the last edit.
+func (b *PieceTable[Content]) Undo() (int, error) {
 	if b.undoTop < 1 {
 		return 0, ErrorBottomOfUndoList
 	}
@@ -53,7 +60,8 @@ func (b *Buffer[Content]) Undo() (int, error) {
 	return edit.undoIndex(), nil
 }
 
-func (b *Buffer[Content]) Redo() (int, error) {
+// Redoes the last edit, if the last action was an undo.
+func (b *PieceTable[Content]) Redo() (int, error) {
 	if b.undoTop == len(b.edits) {
 		return 0, ErrorTopOfUndoList
 	}
@@ -64,7 +72,9 @@ func (b *Buffer[Content]) Redo() (int, error) {
 	return edit.redoIndex(), nil
 }
 
-func (b *Buffer[Content]) undo(e edit) {
+// Ugly. Should be part of the interface, but methods cannot have type
+// parameters.
+func (b *PieceTable[Content]) undo(e edit) {
 	switch ed := e.(type) {
 	case insertion:
 		b.undoInsertion(ed)
@@ -73,7 +83,9 @@ func (b *Buffer[Content]) undo(e edit) {
 	}
 }
 
-func (b *Buffer[Content]) redo(e edit) {
+// Ugly. Should be part of the interface, but methods cannot have type
+// parameters.
+func (b *PieceTable[Content]) redo(e edit) {
 	switch ed := e.(type) {
 	case insertion:
 		b.redoInsertion(ed)
@@ -82,50 +94,49 @@ func (b *Buffer[Content]) redo(e edit) {
 	}
 }
 
-func (b *Buffer[Content]) undoInsertion(i insertion) {
+func (b *PieceTable[Content]) undoInsertion(i insertion) {
 	piec := b.pieces[i.piecIdx]
 	b.pieces = slices.Delete(b.pieces, i.piecIdx, i.piecIdx+1)
 	b.size -= piec.length
 }
 
-func (b *Buffer[Content]) redoInsertion(i insertion) {
+func (b *PieceTable[Content]) redoInsertion(i insertion) {
 	b.pieces = slices.Insert(b.pieces, i.piecIdx, i.piec)
 	b.size += i.piec.length
 }
 
-func (b *Buffer[Content]) undoDeletion(d deletion) {
+func (b *PieceTable[Content]) undoDeletion(d deletion) {
 	for i, p := range d.pieces {
 		b.pieces = slices.Insert(b.pieces, d.piecIdx+i, p)
 	}
 	b.size += d.length
 }
 
-func (b *Buffer[Content]) redoDeletion(d deletion) {
+func (b *PieceTable[Content]) redoDeletion(d deletion) {
 	// We're guaranteed to have exactly the same pieces at the point of the
 	// buffer.
 	b.pieces = slices.Delete(b.pieces, d.piecIdx, d.piecIdx+len(d.pieces))
 }
 
-func (b *Buffer[Content]) normalizeUndo() {
+// Should be called every action that's not an undo or redo so the list is
+// wrapped.
+func (b *PieceTable[Content]) normalizeUndo() {
 	b.edits = b.edits[:b.undoTop]
 }
 
-func (b *Buffer[Content]) pushUndo(e edit) {
+func (b *PieceTable[Content]) pushInsertion(idx int, piecIdx int, piec piece) {
+	e := insertion{idx: idx, piecIdx: piecIdx, piec: piec}
 	b.edits = append(b.edits, e)
 	b.undoTop = len(b.edits)
 }
 
-func (b *Buffer[Content]) pushInsertion(idx int, piecIdx int, piec piece) {
-	b.pushUndo(insertion{idx: idx, piecIdx: piecIdx, piec: piec})
-}
-
-func (b *Buffer[Content]) extendInsertion() {
+func (b *PieceTable[Content]) extendInsertion() {
 	i, _ := b.edits[b.undoTop-1].(insertion)
 	i.piec.length++
 	b.edits[b.undoTop-1] = i
 }
 
-func (b *Buffer[Content]) lastIsInsertion() bool {
+func (b *PieceTable[Content]) lastIsInsertion() bool {
 	if b.undoTop == 0 {
 		return false
 	}
@@ -133,7 +144,7 @@ func (b *Buffer[Content]) lastIsInsertion() bool {
 	return is
 }
 
-func (b *Buffer[Content]) lastIsDeletion() bool {
+func (b *PieceTable[Content]) lastIsDeletion() bool {
 	if b.undoTop == 0 {
 		return false
 	}
@@ -141,12 +152,12 @@ func (b *Buffer[Content]) lastIsDeletion() bool {
 	return is
 }
 
-func (b *Buffer[Content]) lastDeletionIdx() int {
+func (b *PieceTable[Content]) lastDeletionIdx() int {
 	d, _ := b.edits[b.undoTop-1].(deletion)
 	return d.idx
 }
 
-func (b *Buffer[Content]) undoRedoManageDeletion(
+func (b *PieceTable[Content]) undoRedoManageDeletion(
 	idx int,
 	piecIdx int,
 	p piece,
@@ -167,7 +178,7 @@ func (b *Buffer[Content]) undoRedoManageDeletion(
 	b.undoTop++
 }
 
-func (b *Buffer[Content]) undoRedoAddDeletionPiece(
+func (b *PieceTable[Content]) undoRedoAddDeletionPiece(
 	idx int,
 	p piece,
 	piecIdx int,

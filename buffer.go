@@ -1,44 +1,51 @@
-// Package buffer implements an efficient PieceTable generic buffer with
+// Package gopiecetable implements an efficient Piece Table generic buffer with
 // infinite undo/redo capabilities.
-package buffer
+package gopiecetable
 
 import (
 	"errors"
-	"os"
 	"slices"
-	"unsafe"
 )
-
-var ErrorOutOfBounds = errors.New("out of bounds")
 
 // Using slices for representing pieces was kinda weird so I didn't.
 
-var bufferSize = os.Getpagesize()
+// Returned when trying to operate out of bounds.
+var ErrorOutOfBounds = errors.New("out of bounds")
 
-type Buffer[Content any] struct {
-	// The first buffer never changes and does not respect the buffer size.
+// PieceTable implements an efficient Piece Table with infinite undo/redo
+// capabilities. You should get one from New, FromString or FromSlice.
+type PieceTable[Content any] struct {
+	// The first buffer never changes and does not respect the buffer size if
+	// the piece table is initialized with content.
 	buffers []backingBuffer[Content]
-	pieces  []piece
-	edits   []edit
-	size    int // Cache
+	// The pieces.
+	pieces []piece
+	// The undo/redo list.
+	edits []edit
+	// Cache. Remember to keep it in sync.
+	size int
+	// The top of the undo/redo list, i.e., the current edit is undoTop-1.
 	undoTop int
 }
 
+// A piece.
 type piece struct {
 	buffer int
 	start  int
 	length int
 }
 
-func New[Content any]() *Buffer[Content] {
-	buffer := new(Buffer[Content])
+// New returns an empty piece table.
+func New[Content any]() *PieceTable[Content] {
+	buffer := new(PieceTable[Content])
 	buffer.buffers = make([]backingBuffer[Content], 1)
 	buffer.buffers[0] = newBackingBuffer[Content](buffer.bufferSize())
 	return buffer
 }
 
-func FromSlice[Content any](content []Content) *Buffer[Content] {
-	buffer := new(Buffer[Content])
+// FromSlice returns a piece table initialized with the contents of the slice.
+func FromSlice[Content any](content []Content) *PieceTable[Content] {
+	buffer := new(PieceTable[Content])
 	buffer.buffers = make([]backingBuffer[Content], 2)
 
 	// Here the memory we alloc is exactly the needed.
@@ -59,7 +66,8 @@ func FromSlice[Content any](content []Content) *Buffer[Content] {
 	return buffer
 }
 
-func Content[Content any](b *Buffer[Content]) []Content {
+// Content returns the content of a piece table as a slice.
+func Content[Content any](b *PieceTable[Content]) []Content {
 	content := make([]Content, 0, b.Size())
 
 	for _, piece := range b.pieces {
@@ -70,7 +78,9 @@ func Content[Content any](b *Buffer[Content]) []Content {
 	return content
 }
 
-func (b *Buffer[Content]) Insert(idx int, r Content) error {
+// Inserts inserts a single item r in the index idx at the piece table. You can
+// set idx to the size of the piece table to append onto it.
+func (b *PieceTable[Content]) Insert(idx int, r Content) error {
 	if len(b.pieces) == 0 {
 		b.insertFirst(r)
 		return nil
@@ -148,7 +158,9 @@ func (b *Buffer[Content]) Insert(idx int, r Content) error {
 	return nil
 }
 
-func (b *Buffer[Content]) insertFirst(r Content) {
+// Inserts r as the first item on the piece table, should be used only when
+// inserting in an empty buffer.
+func (b *PieceTable[Content]) insertFirst(r Content) {
 	b.normalizeUndo()
 	b.size++
 	newPiece := piece{
@@ -161,7 +173,8 @@ func (b *Buffer[Content]) insertFirst(r Content) {
 	b.pushInsertion(0, 0, newPiece)
 }
 
-func (b *Buffer[Content]) Delete(idx int) error {
+// Delete removes the item on the index idx.
+func (b *PieceTable[Content]) Delete(idx int) error {
 	pidx, disp, err := b.findPieceWithIdx(idx)
 	if err != nil {
 		return err
@@ -227,7 +240,8 @@ func (b *Buffer[Content]) Delete(idx int) error {
 	return nil
 }
 
-func (b *Buffer[Content]) Get(idx int) (Content, error) {
+// Get returns the item at the index idx.
+func (b *PieceTable[Content]) Get(idx int) (Content, error) {
 	var zero Content
 	piec, disp, err := b.findPieceWithIdx(idx)
 	if err != nil {
@@ -238,11 +252,14 @@ func (b *Buffer[Content]) Get(idx int) (Content, error) {
 	return b.buffers[buf].content[d], nil
 }
 
-func (b *Buffer[Content]) Size() int {
+// Size returns the size of the piece table.
+func (b *PieceTable[Content]) Size() int {
 	return b.size
 }
 
-func (b *Buffer[Content]) tryMergePieces(p1i, p2i int, pieces []piece) []piece {
+// Given two indexes and a slice of pieces, tries to merge the given pieces.
+// p2i must be p1i+1.
+func (b *PieceTable[Content]) tryMergePieces(p1i, p2i int, pieces []piece) []piece {
 	p1 := pieces[p1i]
 	p2 := pieces[p2i]
 	p1endbuf, p1enddisp := b.indexByPiece(p1, p1.length-1)
@@ -259,14 +276,16 @@ func (b *Buffer[Content]) tryMergePieces(p1i, p2i int, pieces []piece) []piece {
 	return pieces
 }
 
-func (b *Buffer[Content]) mergePieces(p1i, p2i int, pieces []piece) []piece {
+// Merges two sequential pieces.
+func (b *PieceTable[Content]) mergePieces(p1i, p2i int, pieces []piece) []piece {
 	removed := pieces[p2i]
 	pieces = slices.Delete(pieces, p2i, p2i+1)
 	pieces[p1i].length += removed.length
 	return pieces
 }
 
-func (b *Buffer[Content]) findPieceWithIdx(idx int) (i int, d int, err error) {
+// Finds the piece with a given index.
+func (b *PieceTable[Content]) findPieceWithIdx(idx int) (i int, d int, err error) {
 	disp := 0
 	for i, piece := range b.pieces {
 		ndisp := piece.length + disp
@@ -279,7 +298,10 @@ func (b *Buffer[Content]) findPieceWithIdx(idx int) (i int, d int, err error) {
 	return 0, 0, ErrorOutOfBounds
 }
 
-func (b *Buffer[Content]) findPieceForInsertion(
+// Finds the piece with a given index, but returns the piece to it's left if
+// the index is the first index of the piece (useful to avoiding another corner
+// case in the insertion)
+func (b *PieceTable[Content]) findPieceForInsertion(
 	idx int,
 ) (i int, d int, err error) {
 	disp := 0
@@ -294,7 +316,8 @@ func (b *Buffer[Content]) findPieceForInsertion(
 	return 0, 0, ErrorOutOfBounds
 }
 
-func (b *Buffer[Content]) pieceContent(p piece) []Content {
+// Returns the content of a piece.
+func (b *PieceTable[Content]) pieceContent(p piece) []Content {
 	arr := make([]Content, 0, p.length)
 	buf := p.buffer
 	bdisp := p.start
@@ -309,7 +332,9 @@ func (b *Buffer[Content]) pieceContent(p piece) []Content {
 	return arr
 }
 
-func (b *Buffer[Content]) indexByPiece(p piece, d int) (buffer int, bdisp int) {
+// Returns the buffer and displacement with a given displacement inside a given
+// piece.
+func (b *PieceTable[Content]) indexByPiece(p piece, d int) (buffer int, bdisp int) {
 	// If in the first (piece) buffer.
 	if p.start+d < b.buffers[p.buffer].size() {
 		return p.buffer, d + p.start
@@ -325,9 +350,4 @@ func (b *Buffer[Content]) indexByPiece(p piece, d int) (buffer int, bdisp int) {
 		buf++
 		disp = newdisp
 	}
-}
-
-func (b *Buffer[Content]) bufferSize() int {
-	var zero Content
-	return bufferSize / int(unsafe.Sizeof(zero))
 }

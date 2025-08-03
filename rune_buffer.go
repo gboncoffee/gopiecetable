@@ -1,8 +1,9 @@
-package buffer
+package gopiecetable
 
 import "strings"
 
-func String(b *Buffer[rune]) string {
+// Returns the content of a PieceTable[rune] as a string.
+func String(b *PieceTable[rune]) string {
 	var builder strings.Builder
 
 	// Trying to be intelligent about the memory.
@@ -20,8 +21,21 @@ func String(b *Buffer[rune]) string {
 	return builder.String()
 }
 
-func FromString(content string) *Buffer[rune] {
-	buffer := new(Buffer[rune])
+// Same as FromSlice, but returns a PieceTable[rune] from the contents of a
+// string. This function may allocate up to four times more memory than the
+// required for the first buffer of the piece table if the text has lots of big
+// UTF-8 runes. Note that the first buffer is immutable, so the additional
+// memory is essentialy useless.
+//
+// For this reason, if you know that your text has lots of those runes, you may
+// want to manually convert the string to a []rune and use FromSlice.
+//
+// For instance, the CJK characters (from Chinese, Japanese and Korean) are
+// encoded as 2 or 3 byte runes. If using FromString with text consisting of
+// only these languages, you're guaranteed to have at least a two times overhead
+// for the first buffer.
+func FromString(content string) *PieceTable[rune] {
+	buffer := new(PieceTable[rune])
 	buffer.buffers = make([]backingBuffer[rune], 2)
 
 	// We make Go alloc a sane amount of memory (may be up to 4x more than we
@@ -38,8 +52,6 @@ func FromString(content string) *Buffer[rune] {
 		buffer.buffers[0].append(c)
 		buffer.size++
 	}
-
-	// Fix the displacement.
 
 	buffer.pieces = append(buffer.pieces, piece{
 		buffer: 0,

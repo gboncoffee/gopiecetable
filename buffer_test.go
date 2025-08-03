@@ -1,4 +1,4 @@
-package buffer
+package gopiecetable
 
 import (
 	_ "embed"
@@ -28,7 +28,7 @@ func TestFromString(t *testing.T) {
 	}
 }
 
-func helperTestIndexing(t *testing.T, b *Buffer[rune], expected string) {
+func helperTestIndexing(t *testing.T, b *PieceTable[rune], expected string) {
 	// We cannot use the index in the range because we need the index of the
 	// rune and not the byte index.
 	i := 0
@@ -54,7 +54,7 @@ func TestIndexingVirginBuffer(t *testing.T) {
 	helperTestIndexing(t, b, testString)
 }
 
-func helperInsertBeggining(b *Buffer[rune], insert string) {
+func helperInsertBeggining(b *PieceTable[rune], insert string) {
 	i := 0
 	for _, c := range insert {
 		b.Insert(i, c)
@@ -62,7 +62,7 @@ func helperInsertBeggining(b *Buffer[rune], insert string) {
 	}
 }
 
-func helperTestContent(t *testing.T, b *Buffer[rune], expected string, pieces int, _ int) {
+func helperTestContent(t *testing.T, b *PieceTable[rune], expected string, pieces int, _ int) {
 	content := String(b)
 	if content != expected {
 		t.Fatalf(
@@ -96,7 +96,7 @@ func TestInsertionBeggining(t *testing.T) {
 	helperTestIndexing(t, b, expected)
 }
 
-func helperInsertEnd(b *Buffer[rune], insert string) {
+func helperInsertEnd(b *PieceTable[rune], insert string) {
 	for _, c := range insert {
 		b.Insert(b.Size(), c)
 	}
@@ -113,7 +113,7 @@ func TestInsertionEnd(t *testing.T) {
 	helperTestIndexing(t, b, expected)
 }
 
-func helperInsertMiddle(b *Buffer[rune], insert string, i int) {
+func helperInsertMiddle(b *PieceTable[rune], insert string, i int) {
 	for _, c := range insert {
 		b.Insert(i, c)
 		i++
