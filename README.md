@@ -27,5 +27,23 @@ doing so in the reverse will yield multiple edits.
 Example usage:
 
 ```go
-
+b := FromString("Hello World")
+b.Insert(5, ',') // "Hello, World"
+b.Insert(b.Size(), '!') // "Hello, World!"
+b.Undo() // "Hello, World"
+b.Delete(5) // "Hello World"
+b.Insert(5, ',') // "Hello, World"
+b.Insert(b.Size(), '!') // "Hello, World!"
+b.Undo() // "Hello, World"
+b.Undo() // "Hello World"
+b.Redo() // "Hello, World"
+b.Redo() // "Hello, World!"
 ```
+
+## Development
+
+Testing this is very hard. There's a bunch of tests, including one that stresses
+the piece table by making random pre-selected edits. It takes rather long to run
+(almost 10 seconds in my machine). Also, I couldn't make a proper test for the
+undo/redo functionality, all testing it has is done manually during the
+development of my text editor [ah](github.com/gboncoffee/ah).

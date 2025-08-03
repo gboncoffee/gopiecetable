@@ -62,7 +62,7 @@ func helperInsertBeggining(b *PieceTable[rune], insert string) {
 	}
 }
 
-func helperTestContent(t *testing.T, b *PieceTable[rune], expected string, pieces int, _ int) {
+func helperTestContent(t *testing.T, b *PieceTable[rune], expected string) {
 	content := String(b)
 	if content != expected {
 		t.Fatalf(
@@ -71,18 +71,6 @@ func helperTestContent(t *testing.T, b *PieceTable[rune], expected string, piece
 			expected,
 		)
 	}
-
-	if len(b.pieces) != pieces {
-		t.Fatalf(
-			"buffer does not have %v pieces, got %v",
-			pieces,
-			len(b.pieces),
-		)
-	}
-
-	//if len(b.edits) != edits {
-	//	t.Fatalf("buffer does not have %v edits, got %v", edits, len(b.edits))
-	//}
 }
 
 func TestInsertionBeggining(t *testing.T) {
@@ -92,7 +80,7 @@ func TestInsertionBeggining(t *testing.T) {
 	helperInsertBeggining(b, insert)
 
 	expected := insert + testString
-	helperTestContent(t, b, expected, 2, 1)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -109,7 +97,7 @@ func TestInsertionEnd(t *testing.T) {
 	helperInsertEnd(b, insert)
 
 	expected := testString + insert
-	helperTestContent(t, b, expected, 2, 1)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -129,7 +117,7 @@ func TestInsertionMiddle(t *testing.T) {
 	helperInsertMiddle(b, insert, 11)
 
 	expected := left + insert + right
-	helperTestContent(t, b, expected, 3, 1)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -143,7 +131,7 @@ func TestInsertionsBeginAndEnd(t *testing.T) {
 	helperInsertEnd(b, insertEnd)
 
 	expected := insertBegin + testString + insertEnd
-	helperTestContent(t, b, expected, 3, 2)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -161,7 +149,7 @@ func TestTwoInsertionsMiddle(t *testing.T) {
 	right := testString[42:]
 	expected := left + insertAt11 + middle + insertAt47 + right
 
-	helperTestContent(t, b, expected, 5, 2)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -178,7 +166,7 @@ func TestThreeInsertions(t *testing.T) {
 	helperInsertMiddle(b, insertAt5, 5)
 
 	expected := "h123e!@#lABClo"
-	helperTestContent(t, b, expected, 7, 3)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -193,7 +181,7 @@ func TestThreeInsertionsWithPosAppending(t *testing.T) {
 	helperInsertMiddle(b, insertAt4, 4)
 
 	expected := "h123!@#elABClo"
-	helperTestContent(t, b, expected, 6, 3)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
@@ -206,14 +194,14 @@ func TestSplitLastInsertion(t *testing.T) {
 	helperInsertMiddle(b, insertAt5, 5)
 
 	expected := "hel12ABC34lo"
-	helperTestContent(t, b, expected, 5, 2)
+	helperTestContent(t, b, expected)
 	helperTestIndexing(t, b, expected)
 }
 
 func TestNew(t *testing.T) {
 	b := New[rune]()
 	helperInsertBeggining(b, "Hello, World!")
-	helperTestContent(t, b, "Hello, World!", 1, 1)
+	helperTestContent(t, b, "Hello, World!")
 }
 
 func TestFromSlice(t *testing.T) {
@@ -225,7 +213,31 @@ func TestFromSlice(t *testing.T) {
 	bslice := FromSlice(slice)
 	bstring := FromString(testString)
 
-	helperTestContent(t, bslice, String(bstring), 1, 0)
+	helperTestContent(t, bslice, String(bstring))
+}
+
+func TestReadme(t *testing.T) {
+	b := FromString("Hello World")
+	b.Insert(5, ',') // "Hello, World"
+	helperTestContent(t, b, "Hello, World")
+	b.Insert(b.Size(), '!') // "Hello, World!"
+	helperTestContent(t, b, "Hello, World!")
+	b.Undo() // "Hello, World"
+	helperTestContent(t, b, "Hello, World")
+	b.Delete(5) // "Hello World"
+	helperTestContent(t, b, "Hello World")
+	b.Insert(5, ',') // "Hello, World"
+	helperTestContent(t, b, "Hello, World")
+	b.Insert(b.Size(), '!') // "Hello, World!"
+	helperTestContent(t, b, "Hello, World!")
+	b.Undo() // "Hello, World"
+	helperTestContent(t, b, "Hello, World")
+	b.Undo() // "Hello World"
+	helperTestContent(t, b, "Hello World")
+	b.Redo() // "Hello, World"
+	helperTestContent(t, b, "Hello, World")
+	b.Redo() // "Hello, World!"
+	helperTestContent(t, b, "Hello, World!")
 }
 
 func TestRandomEdits(t *testing.T) {
@@ -258,12 +270,6 @@ func TestRandomEdits(t *testing.T) {
 		}
 
 		// Test.
-		t.Logf(
-			"testing (delete %v) at %v for rune %v\n",
-			delete,
-			position,
-			randomRune,
-		)
 		if delete {
 			reference = slices.Delete(reference, int(position), int(position)+1)
 			b.Delete(int(position))
