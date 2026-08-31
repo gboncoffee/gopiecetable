@@ -1,3 +1,6 @@
+This is abandonware, I would suggest if you want to use it, to make your own
+fork to keep track of possible bugs.
+
 # Piece Table for Go
 
 This is an implementation of the
