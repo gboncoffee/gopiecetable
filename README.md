@@ -1,5 +1,4 @@
-This is abandonware, I would suggest if you want to use it, to make your own
-fork to keep track of possible bugs.
+I unarchived this and fixed the bugs in the undo-redo system thanks to Claude. It's usable now.
 
 # Piece Table for Go
 
@@ -45,8 +44,10 @@ b.Redo() // "Hello, World!"
 
 ## Development
 
-Testing this is very hard. There's a bunch of tests, including one that stresses
-the piece table by making random pre-selected edits. It takes rather long to run
-(almost 10 seconds in my machine). Also, I couldn't make a proper test for the
-undo/redo functionality, all testing it has is done manually during the
-development of my text editor [ah](https://github.com/gboncoffee/ah).
+Testing this is very hard. There's a bunch of tests, including ones that stress
+the piece table by making random pre-selected edits. They take rather long to
+run (almost 20 seconds in my machine). The undo/redo functionality used to be
+tested only manually during the development of my text editor
+[ah](https://github.com/gboncoffee/ah), but thanks to Claude it now has proper
+tests too, including a randomized one that checks every undo and redo against
+the expected history.
