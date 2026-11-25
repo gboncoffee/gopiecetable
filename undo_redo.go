@@ -11,111 +11,96 @@ var ErrorBottomOfUndoList = errors.New("reached bottom of undo list")
 // Returned when there's nothing left to redo.
 var ErrorTopOfUndoList = errors.New("reached top of undo list")
 
-// Represents an edit.
-type edit interface {
-	undoIndex() int
-	redoIndex() int
+// How undo/redo works:
+//
+// Every modification of the pieces array goes through replacePieces, which
+// records it as a change: "the pieces [piecIdx, piecIdx+len(before)) were
+// replaced by after". An edit is a list of changes. Undoing an edit replaces
+// each after by its before, in reverse order, and redoing replaces each before
+// by its after, in order. As edits are always undone and redone in stack
+// order, the pieces array is restored exactly, and so is the content.
+
+// The kind of an edit.
+type editKind int
+
+const (
+	insertion editKind = iota
+	deletion
+)
+
+// A change replaces the pieces [piecIdx, piecIdx+len(before)) by after.
+type change struct {
+	piecIdx int
+	before  []piece
+	after   []piece
 }
 
-// Represents an insertion, implements edit.
-type insertion struct {
-	idx     int   // The real index.
-	piecIdx int   // The index in the piece array.
-	piec    piece // The piece itself.
+// Represents an edit, i.e., a sequence of insertions or deletions that is
+// undone and redone as a whole.
+type edit struct {
+	kind    editKind
+	idx     int // The real index where the edit begins.
+	length  int // The number of items inserted or deleted.
+	changes []change
 }
 
-func (i insertion) undoIndex() int {
-	return i.idx
+// Where the cursor should be after undoing the edit.
+func (e *edit) undoIndex() int {
+	if e.kind == insertion {
+		return e.idx
+	}
+	return e.idx + e.length
 }
 
-func (i insertion) redoIndex() int {
-	return i.idx + i.piec.length
+// Where the cursor should be after redoing the edit.
+func (e *edit) redoIndex() int {
+	if e.kind == insertion {
+		return e.idx + e.length
+	}
+	return e.idx
 }
 
-// Represents a deletion, implements edit.
-type deletion struct {
-	idx     int     // The real index.
-	piecIdx int     // The index in the pieces array.
-	length  int     // The total length deleted.
-	pieces  []piece // The pieces deleted.
-}
-
-func (d deletion) undoIndex() int {
-	return d.idx + d.length
-}
-
-func (d deletion) redoIndex() int {
-	return d.idx
-}
-
-// Undoes the last edit.
+// Undo undoes the last edit. Returns the index where the edit happened.
 func (b *PieceTable[Content]) Undo() (int, error) {
 	if b.undoTop < 1 {
 		return 0, ErrorBottomOfUndoList
 	}
 
 	b.undoTop--
-	edit := b.edits[b.undoTop]
-	b.undo(edit)
-	return edit.undoIndex(), nil
+	b.editOpen = false
+	e := &b.edits[b.undoTop]
+	for i := len(e.changes) - 1; i >= 0; i-- {
+		c := e.changes[i]
+		b.pieces = slices.Replace(
+			b.pieces, c.piecIdx, c.piecIdx+len(c.after), c.before...)
+	}
+	if e.kind == insertion {
+		b.size -= e.length
+	} else {
+		b.size += e.length
+	}
+	return e.undoIndex(), nil
 }
 
-// Redoes the last edit, if the last action was an undo.
+// Redo redoes the last undone edit. Returns the index where the edit happened.
 func (b *PieceTable[Content]) Redo() (int, error) {
 	if b.undoTop == len(b.edits) {
 		return 0, ErrorTopOfUndoList
 	}
 
+	e := &b.edits[b.undoTop]
 	b.undoTop++
-	edit := b.edits[b.undoTop-1]
-	b.redo(edit)
-	return edit.redoIndex(), nil
-}
-
-// Ugly. Should be part of the interface, but methods cannot have type
-// parameters.
-func (b *PieceTable[Content]) undo(e edit) {
-	switch ed := e.(type) {
-	case insertion:
-		b.undoInsertion(ed)
-	case deletion:
-		b.undoDeletion(ed)
+	b.editOpen = false
+	for _, c := range e.changes {
+		b.pieces = slices.Replace(
+			b.pieces, c.piecIdx, c.piecIdx+len(c.before), c.after...)
 	}
-}
-
-// Ugly. Should be part of the interface, but methods cannot have type
-// parameters.
-func (b *PieceTable[Content]) redo(e edit) {
-	switch ed := e.(type) {
-	case insertion:
-		b.redoInsertion(ed)
-	case deletion:
-		b.redoDeletion(ed)
+	if e.kind == insertion {
+		b.size += e.length
+	} else {
+		b.size -= e.length
 	}
-}
-
-func (b *PieceTable[Content]) undoInsertion(i insertion) {
-	piec := b.pieces[i.piecIdx]
-	b.pieces = slices.Delete(b.pieces, i.piecIdx, i.piecIdx+1)
-	b.size -= piec.length
-}
-
-func (b *PieceTable[Content]) redoInsertion(i insertion) {
-	b.pieces = slices.Insert(b.pieces, i.piecIdx, i.piec)
-	b.size += i.piec.length
-}
-
-func (b *PieceTable[Content]) undoDeletion(d deletion) {
-	for i, p := range d.pieces {
-		b.pieces = slices.Insert(b.pieces, d.piecIdx+i, p)
-	}
-	b.size += d.length
-}
-
-func (b *PieceTable[Content]) redoDeletion(d deletion) {
-	// We're guaranteed to have exactly the same pieces at the point of the
-	// buffer.
-	b.pieces = slices.Delete(b.pieces, d.piecIdx, d.piecIdx+len(d.pieces))
+	return e.redoIndex(), nil
 }
 
 // Should be called every action that's not an undo or redo so the list is
@@ -124,71 +109,72 @@ func (b *PieceTable[Content]) normalizeUndo() {
 	b.edits = b.edits[:b.undoTop]
 }
 
-func (b *PieceTable[Content]) pushInsertion(idx int, piecIdx int, piec piece) {
-	e := insertion{idx: idx, piecIdx: piecIdx, piec: piec}
-	b.edits = append(b.edits, e)
+// Returns the edit that new changes may be grouped into, or nil if there's
+// none (there are no edits, or the last action was an undo or redo).
+func (b *PieceTable[Content]) openEdit() *edit {
+	if !b.editOpen || b.undoTop == 0 || b.undoTop != len(b.edits) {
+		return nil
+	}
+	return &b.edits[b.undoTop-1]
+}
+
+func (b *PieceTable[Content]) pushEdit(kind editKind, idx int) {
+	b.edits = append(b.edits, edit{kind: kind, idx: idx, length: 1})
 	b.undoTop = len(b.edits)
+	b.editOpen = true
 }
 
-func (b *PieceTable[Content]) extendInsertion() {
-	i, _ := b.edits[b.undoTop-1].(insertion)
-	i.piec.length++
-	b.edits[b.undoTop-1] = i
-}
-
-func (b *PieceTable[Content]) lastIsInsertion() bool {
-	if b.undoTop == 0 {
-		return false
+// Must be called before modifying the pieces for an insertion at idx. Groups
+// the insertion with the last edit if it's an insertion that ends at idx
+// (typing left-to-right), otherwise starts a new edit.
+func (b *PieceTable[Content]) startInsertion(idx int) {
+	if e := b.openEdit(); e != nil && e.kind == insertion &&
+		e.idx+e.length == idx {
+		e.length++
+		return
 	}
-	_, is := b.edits[b.undoTop-1].(insertion)
-	return is
+	b.pushEdit(insertion, idx)
 }
 
-func (b *PieceTable[Content]) lastIsDeletion() bool {
-	if b.undoTop == 0 {
-		return false
+// Must be called before modifying the pieces for a deletion at idx. Groups the
+// deletion with the last edit if it's a deletion that begins right after idx
+// (deleting right-to-left, like backspace), otherwise starts a new edit.
+func (b *PieceTable[Content]) startDeletion(idx int) {
+	if e := b.openEdit(); e != nil && e.kind == deletion && e.idx-1 == idx {
+		e.idx = idx
+		e.length++
+		return
 	}
-	_, is := b.edits[b.undoTop-1].(deletion)
-	return is
+	b.pushEdit(deletion, idx)
 }
 
-func (b *PieceTable[Content]) lastDeletionIdx() int {
-	d, _ := b.edits[b.undoTop-1].(deletion)
-	return d.idx
-}
-
-func (b *PieceTable[Content]) undoRedoManageDeletion(
-	idx int,
+// Replaces the n pieces starting at piecIdx by newPieces, recording the change
+// in the current edit. Every modification of the pieces array outside of undo
+// and redo must go through here.
+func (b *PieceTable[Content]) replacePieces(
 	piecIdx int,
-	p piece,
+	n int,
+	newPieces ...piece,
 ) {
-	if b.lastIsDeletion() {
-		ei := b.lastDeletionIdx()
-		if ei-1 == idx {
-			b.undoRedoAddDeletionPiece(idx, p, piecIdx)
+	e := &b.edits[b.undoTop-1]
+
+	// If the replaced range is inside the range written by the last change,
+	// fold this change into it instead of recording a new one. This keeps,
+	// e.g., typing a long text from recording a change per item.
+	if k := len(e.changes); k > 0 {
+		last := &e.changes[k-1]
+		rel := piecIdx - last.piecIdx
+		if rel >= 0 && rel+n <= len(last.after) {
+			last.after = slices.Replace(last.after, rel, rel+n, newPieces...)
+			b.pieces = slices.Replace(b.pieces, piecIdx, piecIdx+n, newPieces...)
 			return
 		}
 	}
-	b.edits = append(b.edits, deletion{
-		idx:     idx,
-		piecIdx: piecIdx,
-		pieces:  []piece{p},
-		length:  p.length,
-	})
-	b.undoTop++
-}
 
-func (b *PieceTable[Content]) undoRedoAddDeletionPiece(
-	idx int,
-	p piece,
-	piecIdx int,
-) {
-	d, _ := b.edits[b.undoTop-1].(deletion)
-	d.pieces = slices.Insert(d.pieces, 0, p)
-	// Possibly merge the pieces.
-	d.pieces = b.tryMergePieces(0, 1, d.pieces)
-	d.piecIdx = piecIdx
-	d.length += p.length
-	d.idx = idx
-	b.edits[b.undoTop-1] = d
+	e.changes = append(e.changes, change{
+		piecIdx: piecIdx,
+		before:  slices.Clone(b.pieces[piecIdx : piecIdx+n]),
+		after:   slices.Clone(newPieces),
+	})
+	b.pieces = slices.Replace(b.pieces, piecIdx, piecIdx+n, newPieces...)
 }

@@ -26,6 +26,9 @@ type PieceTable[Content any] struct {
 	size int
 	// The top of the undo/redo list, i.e., the current edit is undoTop-1.
 	undoTop int
+	// Whether new insertions or deletions may be grouped into the current
+	// edit. False right after an undo or redo.
+	editOpen bool
 }
 
 // A piece.
@@ -81,22 +84,22 @@ func Content[Content any](b *PieceTable[Content]) []Content {
 // Inserts inserts a single item r in the index idx at the piece table. You can
 // set idx to the size of the piece table to append onto it.
 func (b *PieceTable[Content]) Insert(idx int, r Content) error {
-	if len(b.pieces) == 0 {
-		b.insertFirst(r)
-		return nil
-	}
-
-	pidx, disp, err := b.findPieceForInsertion(idx)
-	if err != nil {
-		return err
+	pidx, disp := 0, 0
+	if len(b.pieces) == 0 && idx != 0 {
+		return ErrorOutOfBounds
+	} else if len(b.pieces) > 0 {
+		var err error
+		pidx, disp, err = b.findPieceForInsertion(idx)
+		if err != nil {
+			return err
+		}
 	}
 
 	b.normalizeUndo()
+	b.startInsertion(idx)
 	b.size++
 
-	piec := b.pieces[pidx]
 	buffer := len(b.buffers) - 1
-
 	newPiece := piece{
 		buffer: buffer,
 		start:  b.buffers[buffer].size(),
@@ -105,72 +108,53 @@ func (b *PieceTable[Content]) Insert(idx int, r Content) error {
 
 	b.appendToBack(r)
 
-	// If "appending" on the piece and the piece is pointing to the end of the
-	// buffers, we literally append onto it. There's no need for a new undo.
+	// If the piece table is empty.
+	if len(b.pieces) == 0 {
+		b.replacePieces(0, 0, newPiece)
+		return nil
+	}
+
+	piec := b.pieces[pidx]
+
+	// If "appending" on the piece.
 	if disp == piec.length {
 		buf, i := b.indexByPiece(piec, piec.length-1)
 		// Minus 2 because we need to exclude the item we just inserted.
 		sm1 := b.buffers[buf].size() - 2
-		// We DO want a new undo entry in the case the last one was a
-		// deletion.
-		if b.lastIsInsertion() && buf == buffer && i == sm1 {
-			b.extendInsertion()
-			b.pieces[pidx].length++
+		// If the piece is pointing to the end of the buffers, we literally
+		// append onto it.
+		if buf == buffer && i == sm1 {
+			piec.length++
+			b.replacePieces(pidx, 1, piec)
 			return nil
 		}
 
 		// Else we insert the new piece.
-		b.pieces = slices.Insert(b.pieces, pidx+1, newPiece)
-		b.pushInsertion(idx, pidx+1, newPiece)
+		b.replacePieces(pidx+1, 0, newPiece)
 		return nil
 	}
 
 	// If inserting in the beggining of a piece.
 	if disp == 0 {
-		b.pieces = slices.Insert(b.pieces, pidx, newPiece)
-		b.pushInsertion(idx, pidx, newPiece)
+		b.replacePieces(pidx, 0, newPiece)
 		return nil
 	}
 
-	// If inserting in the middle of a piece
-
-	orig := b.pieces[pidx]
-
-	// We make the existing piece the right one.
-	b.pieces[pidx] = piece{
-		buffer: orig.buffer,
-		start:  orig.start + disp,
-		length: orig.length - disp,
-	}
-
-	// Insert the new piece.
-	b.pieces = slices.Insert(b.pieces, pidx, newPiece)
-
-	// Insert the left piece.
-	b.pieces = slices.Insert(b.pieces, pidx, piece{
-		buffer: orig.buffer,
-		start:  orig.start,
+	// If inserting in the middle of a piece, we split it.
+	left := piece{
+		buffer: piec.buffer,
+		start:  piec.start,
 		length: disp,
-	})
-
-	b.pushInsertion(idx, pidx+1, newPiece)
+	}
+	rightBuf, rightStart := b.indexByPiece(piec, disp)
+	right := piece{
+		buffer: rightBuf,
+		start:  rightStart,
+		length: piec.length - disp,
+	}
+	b.replacePieces(pidx, 1, left, newPiece, right)
 
 	return nil
-}
-
-// Inserts r as the first item on the piece table, should be used only when
-// inserting in an empty buffer.
-func (b *PieceTable[Content]) insertFirst(r Content) {
-	b.normalizeUndo()
-	b.size++
-	newPiece := piece{
-		buffer: len(b.buffers) - 1,
-		start:  b.buffers[len(b.buffers)-1].size(),
-		length: 1,
-	}
-	b.appendToBack(r)
-	b.pieces = append(b.pieces, newPiece)
-	b.pushInsertion(0, 0, newPiece)
 }
 
 // Delete removes the item on the index idx.
@@ -181,60 +165,49 @@ func (b *PieceTable[Content]) Delete(idx int) error {
 	}
 
 	b.normalizeUndo()
+	b.startDeletion(idx)
 	b.size--
 
 	piec := b.pieces[pidx]
-	buf, bd := b.indexByPiece(piec, disp)
 
-	switch disp {
+	switch {
+	// If the piece has a single item, we remove it.
+	// TODO: when removing, we may have sequential pieces. We could merge them
+	// with tryMergePieces, which is safe to do through replacePieces.
+	case piec.length == 1:
+		b.replacePieces(pidx, 1)
+
 	// If removing from the top of the piece, we can simply decrease.
-	case piec.length - 1:
-		b.pieces[pidx].length--
-		i := pidx + 1
-		if b.pieces[pidx].length == 0 {
-			i--
-		}
-		b.undoRedoManageDeletion(idx, i, piece{
-			buffer: buf, start: bd, length: 1,
-		})
+	case disp == piec.length-1:
+		piec.length--
+		b.replacePieces(pidx, 1, piec)
 
 	// If removing from the beggining of the piece, we can simply increase the
 	// start.
-	case 0:
-		b.pieces[pidx].start++
-		b.pieces[pidx].length--
-		b.undoRedoManageDeletion(idx, pidx, piece{
-			buffer: buf, start: bd, length: 1,
-		})
-
+	case disp == 0:
+		piec.start++
+		piec.length--
 		// If the piece begins at the end of the buffer.
-		if b.pieces[pidx].start == b.buffers[b.pieces[pidx].buffer].size() {
-			b.pieces[pidx].buffer++
-			b.pieces[pidx].start = 0
+		if piec.start == b.buffers[piec.buffer].size() {
+			piec.buffer++
+			piec.start = 0
 		}
-	default:
-		// If we need to split the piece, we insert to the right.
-		newb, newbdisp := b.indexByPiece(piec, disp+1)
-		newPiece := piece{
-			buffer: newb,
-			start:  newbdisp,
-			length: b.pieces[pidx].length - (disp + 1),
-		}
-		b.pieces[pidx].length = disp
-		b.pieces = slices.Insert(b.pieces, pidx+1, newPiece)
-		b.undoRedoManageDeletion(idx, pidx+1, piece{
-			buffer: buf, start: bd, length: 1,
-		})
-	}
+		b.replacePieces(pidx, 1, piec)
 
-	// If the length of the piece now is 0, we can remove it.
-	if b.pieces[pidx].length == 0 {
-		b.pieces = slices.Delete(b.pieces, pidx, pidx+1)
-		// When removing, we may have sequential pieces. We can merge then.
-		// TODO: IMPLEMENT PIECE MERGING THAT WORKS WITH UNDO/REDO.
-		// if pidx > 0 {
-		// 	b.pieces = b.tryMergePieces(pidx-1, pidx, b.pieces)
-		// }
+	// Else we need to split the piece.
+	default:
+		left := piece{
+			buffer: piec.buffer,
+			start:  piec.start,
+			length: disp,
+		}
+		rightBuf, rightStart := b.indexByPiece(piec, disp+1)
+		right := piece{
+			buffer: rightBuf,
+			start:  rightStart,
+			length: piec.length - (disp + 1),
+		}
+		b.replacePieces(pidx, 1, left, right)
 	}
 
 	return nil
@@ -345,7 +318,7 @@ func (b *PieceTable[Content]) indexByPiece(p piece, d int) (buffer int, bdisp in
 	for {
 		newdisp := disp + b.buffers[buf].size()
 		if newdisp > d {
-			return buf, newdisp - d
+			return buf, d - disp
 		}
 		buf++
 		disp = newdisp
